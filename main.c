@@ -6,13 +6,12 @@
   ******************************************************************************
   * @attention
   *
-  * <h2><center>&copy; Copyright (c) 2021 STMicroelectronics.
-  * All rights reserved.</center></h2>
+  * Copyright (c) 2021 STMicroelectronics.
+  * All rights reserved.
   *
-  * This software component is licensed by ST under BSD 3-Clause license,
-  * the "License"; You may not use this file except in compliance with the
-  * License. You may obtain a copy of the License at:
-  *                        opensource.org/licenses/BSD-3-Clause
+  * This software is licensed under terms that can be found in the LICENSE file
+  * in the root directory of this software component.
+  * If no LICENSE file comes with this software, it is provided AS-IS.
   *
   ******************************************************************************
   */
@@ -24,12 +23,9 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-#include <stdint.h>
-#include <stdbool.h>
-#include "stm32f4xx_hal.h"
-#include <usart_driver.h>
-#include <gpio_driver.h>
-#include <morse.h>
+#include "gpio_driver.h"
+#include "morse.h"
+#include "usart_driver.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -49,6 +45,38 @@
 /* Private variables ---------------------------------------------------------*/
 
 /* USER CODE BEGIN PV */
+bool previousButtonState = false;
+uint32_t pressTimestamp;
+uint32_t nowTimestamp;
+const uint32_t longPressTime = 500;
+int buttonCode = 0; // последовательность, набранная кнопкой
+char buttonCodeLength = 0; // длина последовательности
+const uint32_t endTimeDuration = 5000; // время, спустя которое выведется последовательность с кнопки
+
+char blinkCodeIndex = 0; // текущий индекс на моргание последовательности с кнопки
+uint32_t blinkCodeTimestamp;
+const uint32_t shortBlinkDelay = 500;
+const uint32_t longBlinkDelay = 1000;
+
+uint8_t transmitLetter; // символ для передачи
+bool transmitRequest = false; // запрос на передачу
+
+bool interruptsEnabled = false; // флаг разрешения прерывания
+
+uint8_t buffer[8]; // буфер символов, введенных с клавиатуры
+char putIndex = 0; // индекс добавления символа в буфер
+char getIndex = 0; // индекс взятия символа
+bool isBufferFull = false;
+
+bool receiveStarted = false;
+uint8_t receivedLetter = 0;
+bool newLetterReceived = false;
+
+char blinkLetterIndex; // текущий индекс на моргание символа с клавиатуры
+int blinkLetter; // символ на моргание
+uint8_t blinkLetterLength; // длина текущего символа на моргание
+uint32_t blinkLetterTimestamp;
+bool bufferLetterAvailable = true; // флаг доступности вывода следующего символа с клавиатуры на светодиоды
 
 /* USER CODE END PV */
 
@@ -61,214 +89,196 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-uint32_t pressTimestamp = 0;
-uint32_t nowTimestamp = 0;
-uint32_t timeWithoutPressTimestamp = 0;
-const uint32_t longPress = 500;
-const uint32_t stopTime = 5000;
-
-uint32_t playTime = 500;
-uint8_t inputCode = 0;
-char inputCodeLength = 0;
-char blinkCodeIndex = 0;
-uint32_t blinkCodeTimestamp = 0;
-uint32_t blinkDelay = 500;
-bool isDiodeWorking = false;
-
-bool transmitRequest = false;
-uint8_t transmitLetter = 0;
-bool transmitStarted = false;
-
-bool newLetter = false;
-uint8_t receivedLetter = 0;
-bool receiveStarted = false;
-uint8_t buffer[8]; // 8 - buffer size
-bool isBufferFull = false;
-char bufferIndex = 0;
-char bufferLength = 8;
-char bufferGetIndex = 0;
-char bufferCounter = 0;
-
-uint8_t letterToBlink;
-char blinkLetterIndex = 0;
-char blinkLetterLength = 0;
-uint32_t blinkLetterTimestamp = 0;
-
-bool isEnabledInterrupt = false;
-
-
-void resetInputCode(){
-	inputCode = 0;
-	inputCodeLength = 0;
+void resetButtonCode(){
+	buttonCode = 0;
+	buttonCodeLength = 0;
 	blinkCodeIndex = 0;
 }
 
-void handleButtonClick(){
-	bool buttonState = getButtonState();
-	if (buttonState){// если нажата
-		if (pressTimestamp == 0) nowTimestamp = HAL_GetTick(); // вводится новое в случае долгого ненажатия кнопки
-		pressTimestamp = getTimeDifference(nowTimestamp);// getButton определяет время, прошедшее от nowTime
-		// на протяжении всего нажатия nowTime не меняется
-	} else {
-		if (pressTimestamp != 0 && inputCodeLength == 4){
-			resetInputCode();
-		}
-		if (pressTimestamp >= longPress){
-			inputCode = inputCode * 10 + 2;
-			inputCodeLength++;
-			nowTimestamp = HAL_GetTick();
-		} else if (pressTimestamp > 0) {
-			inputCode = inputCode * 10 + 1;
-			inputCodeLength++;
-			nowTimestamp = HAL_GetTick();
-		} else if (pressTimestamp == 0) {
-			timeWithoutPressTimestamp = getTimeDifference(nowTimestamp); // при ненажатии startTime не обновляется
-			if (timeWithoutPressTimestamp >= stopTime){
-				char letter = codeToLetter(inputCode);
-				if (letter != -1){
-					transmitLetter = letter;
-					transmitRequest = true;
-				}
-				timeWithoutPressTimestamp = 0;
-				resetInputCode();
-			}
-		}
-		pressTimestamp = 0;// т.к. действия обработки pressTime закончены, нужно обнулить
-	}
+void handleButtonClick() {
+    bool buttonState = getButtonState();
+    if (buttonState) { // если нажата
+        if (!previousButtonState) { // если до этого не была нажата
+            pressTimestamp = nowTimestamp; // фиксируем время начала нажатия
+        }
+    } else { // не нажата
+    	if (previousButtonState){ // если до этого была нажата
+    		if (buttonCodeLength == 4){ // максимальная длина кода морзе равна 4
+    			resetButtonCode(); // если она превышена, обнуляем последовательность, т.к. она ошибочна
+    		}
+    		uint32_t pressDuration = getTimeDifference(pressTimestamp); // длительность нажатия
+    		if (pressDuration >= longPressTime){
+    			buttonCode = buttonCode * 10 + 2;
+    			buttonCodeLength++; // длина последовательности
+    		} else {
+    			buttonCode = buttonCode * 10 + 1;
+    			buttonCodeLength++;
+    		}
+    		pressTimestamp = nowTimestamp;
+    	} else {
+    		uint32_t noPressDuration = getTimeDifference(pressTimestamp); // время без нажатия
+    		if (noPressDuration >= endTimeDuration && buttonCodeLength > 0){
+    			// длина последовательности для вывода обязана быть ненулевой
+    			char letter = codeToLetter(buttonCode);
+    			if (letter){ // если последовательность является символом
+    				transmitLetter = letter;
+    				transmitRequest = true;
+    				resetButtonCode();
+    			}
+    		}
+    	}
+    }
+    previousButtonState = buttonState;
 }
 
-void playCodeBlink(){ // вывод на диоды вводимой с кнопки последовательности
-	uint32_t timeWithoutBlink = getTimeDifference(blinkCodeTimestamp);
-	if (timeWithoutBlink >= blinkDelay){
-		uint8_t buff = inputCode;
-		uint8_t counter = inputCodeLength - blinkCodeIndex;
-		for(int i = 1; i < counter; i++){
-			buff = buff / 10;
+// вывод последовательности с кнопки
+void blinkButtonCode(){
+	uint32_t duration = getTimeDifference(blinkCodeTimestamp);
+	if (duration >= shortBlinkDelay){
+		int code = buttonCode;
+		int pow = buttonCodeLength - blinkCodeIndex - 1;
+		for (int i = 0; i < pow; i++){
+			code /= 10;
 		}
-		buff %= 10; // код 2 или 1
-		uint8_t diode = buff == 1? 1: 2; // 1 - yellow, 2 - red, 0 - green
-		if (getDiodeState(diode)){
-			turnOffDiode(diode);
+		code %= 10;
+		int diodeColor = code;
+		if (getDiodeState(diodeColor)){ // если диод уже включен, отключаем и считаем его выведенным
+			turnDiodeOff(diodeColor);
 			blinkCodeIndex++;
 		} else {
-			turnOnDiode(diode);
+			turnDiodeOn(diodeColor);
 		}
-		blinkCodeTimestamp = HAL_GetTick();
+		blinkCodeTimestamp = nowTimestamp;
 	}
 }
 
-void playLetterBlink() {
-	uint32_t timeWithoutBlink = getTimeDifference(blinkLetterTimestamp);
-	if (timeWithoutBlink >= blinkDelay){
-		uint8_t buff = letterToBlink;
-		uint8_t counter = blinkLetterLength - blinkLetterIndex;
-		for(int i = 1; i < counter; i++){
-			buff = buff / 10;
-		}
-		buff %= 10; // код 2 или 1
-		uint8_t diode = buff == 1? 1: 2; // 1 - yellow, 2 - red, 0 - green
-		if (getDiodeState(diode)){
-			turnOffDiode(diode);
-			blinkLetterIndex++;
-		} else {
-			turnOnDiode(diode);
-		}
-		blinkLetterTimestamp = HAL_GetTick();
-	}
+// очищаем запрос на передачу
+void resetTransmit(){
+	transmitRequest = false;
+	transmitLetter = 0;
 }
 
-void handleTransmit(){ // вызывается только при выводе символа с кнопки
+// осуществляется блокирующая передача по запросу
+void transmitBlocking(){
 	if (transmitRequest){
-		transmitRequest = false;
-		transmitStarted = false;
-		resetInputCode();
+		if (transmit(&huart6, &transmitLetter)){
+			resetTransmit();
+		}
 	}
 }
 
+// добавление символа с клавиатуры в незаполенный буфер
 void bufferPut(uint8_t letter){
 	if (!isBufferFull){
-		buffer[bufferIndex] = letter;
-		bufferIndex++;
-		bufferCounter++;
-		if (bufferCounter == bufferLength) isBufferFull = true;
-		if (bufferIndex == bufferCounter) bufferIndex = 0;
+		buffer[putIndex] = letter;
+		putIndex = (putIndex + 1) % 8;
+		if (putIndex == getIndex) isBufferFull = true;
 	}
 }
 
 bool isBufferEmpty(){
-	return bufferCounter == 0;
+	return (putIndex == getIndex) && !isBufferFull;
 }
 
+// получение символа из буфера только в том случае, если он не пустой
 uint8_t bufferGet(){
 	if (!isBufferEmpty()){
-		uint8_t letter = buffer[bufferGetIndex];
-		bufferGetIndex++;
-		bufferCounter--;
-		if (bufferCounter < bufferLength) isBufferFull = false;
-		if (bufferGetIndex == bufferLength) bufferGetIndex = 0;
+		uint8_t letter = buffer[getIndex];
+		getIndex = (getIndex + 1) % 8;
+		isBufferFull = false;
 		return letter;
 	}
 	return 0;
 }
 
-void putNewLetter(){
-	if (!isBufferEmpty()){
-		uint8_t letter = bufferGet();
-		uint8_t code = letterToCode(letter);
-		int len = 0;
-		int buffer = code;
-		while (buffer > 0) {
-			buffer /= 10;
-			len++;
-		}
-		blinkLetterLength = len;
-		blinkLetterIndex = 0;
+// определение введенного с клавиатуры символа и соответствующей ему функции
+void serviceNewLetter(uint8_t letter){
+	if (letter >= 'a' && letter <= 'z'){
+		bufferPut(letter);
+	} else if (letter == '+') { // переключение режима
+		interruptsEnabled = !interruptsEnabled;
+		if (interruptsEnabled) enableInterrupt();
+		else disableInterrupt();
 	}
 }
 
-void handleNewLetter(){
-	if (receivedLetter >= 97 && receivedLetter <= 122){
-		bufferPut(receivedLetter);
-	} else if (receivedLetter == '+'){
-		toggleInterrupt(isEnabledInterrupt);
-		isEnabledInterrupt = !isEnabledInterrupt;
-	}
-}
-
-void resetReceivedLetter(){
+// обработка нового символа с клавиатуры для неблокирующего режима
+void finishReceiveIT(){
+	transmitIT(&huart6, &receivedLetter);
+	serviceNewLetter(receivedLetter);
 	receivedLetter = 0;
 	receiveStarted = false;
+	newLetterReceived = false;
 }
 
-void handleReceiveIT(){
-	transmitIT(&huart6, &receivedLetter);
-	handleNewLetter();
-	resetReceivedLetter();
-	newLetter = false;
-}
-
-void startReceiveTransmitIT(){
-	if (!receivedLetter && !receiveStarted){
-		receiveIT(&huart6, &receivedLetter);
-		receiveStarted = true;
-	}
-	if (transmitRequest && !transmitStarted){
-		transmitIT(&huart6, &transmitLetter);
-		transmitStarted = true;
-	}
-}
-
-void startReceiveTransmit(){
-	if (transmitRequest){
-		if (transmitBlocking(&huart6, &transmitLetter)){
-			handleTransmit();
-		}
-	}
-	receivedLetter = receiveBlocking(&huart6);
+// блокирующее чтение символа
+void receiveBlocking(){
+	uint8_t receivedLetter = receive(&huart6);
 	if (receivedLetter){
-		transmitBlocking(&huart6, &receivedLetter);
-		handleNewLetter();
-		resetReceivedLetter();
+		transmit(&huart6, &receivedLetter);
+		serviceNewLetter(receivedLetter);
+	}
+}
+
+// очищение буфера символа с клавиатуры для моргания
+void resetLetterBuffer(){
+	blinkLetter = 0;
+	blinkLetterLength = 0;
+	blinkLetterIndex = 0;
+	bufferLetterAvailable = true; // разрешение моргания следующего символа
+}
+
+// вывод на зеленый светодиод символа с клавиатуры
+void blinkBufferedLetter(){
+	int letter = blinkLetter;
+	int pow = blinkLetterLength - blinkLetterIndex - 1;
+	for (int i = 0; i < pow; i++){
+		letter /= 10;
+	}
+	letter %= 10;
+	int diodeColor = 0;
+	uint32_t delay = letter == 1? shortBlinkDelay: longBlinkDelay;
+	uint32_t duration = getTimeDifference(blinkLetterTimestamp);
+	if (duration >= delay){
+		if (getDiodeState(diodeColor)){
+			turnDiodeOff(diodeColor);
+			blinkLetterIndex++;
+			if (blinkLetterIndex == blinkLetterLength) resetLetterBuffer();
+		} else {
+			turnDiodeOn(diodeColor);
+		}
+		blinkLetterTimestamp = nowTimestamp;
+	}
+}
+
+// добавление символа с клавиатуры в буфер моргания
+void putLetterToBlinkBuffer(){
+	if (!isBufferEmpty()){
+		uint8_t letter = bufferGet();
+		blinkLetter = letterToCode(letter);
+		int buffer = blinkLetter;
+		while (buffer > 0){
+			buffer /= 10;
+			blinkLetterLength++;
+		}
+		blinkLetterIndex = 0;
+		bufferLetterAvailable = false;
+	}
+}
+
+// неблокирующее чтение
+void receiveNonBlocking(){
+	if (!receiveStarted && !receivedLetter){
+		receiveIT(&huart6, &receivedLetter);
+		receiveStarted = false;
+	}
+}
+
+// неблокирующая передача
+void transmitNonBlocking(){
+	if (transmitRequest){
+		transmitIT(&huart6, &transmitLetter);
+		transmitRequest = false;
 	}
 }
 
@@ -278,7 +288,8 @@ void startReceiveTransmit(){
   * @brief  The application entry point.
   * @retval int
   */
-int main(void) {
+int main(void)
+{
   /* USER CODE BEGIN 1 */
 
   /* USER CODE END 1 */
@@ -303,37 +314,35 @@ int main(void) {
   MX_GPIO_Init();
   MX_USART6_UART_Init();
   /* USER CODE BEGIN 2 */
-  blinkCodeTimestamp = HAL_GetTick();
-  blinkLetterTimestamp = HAL_GetTick();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
-  while (1)
-  {
-	  handleButtonClick();
-	  if (isEnabledInterrupt){
-		  startReceiveTransmitIT();
-		  if (newLetter) handleReceiveIT();
-	  } else {
-		  startReceiveTransmit();
-	  }
-
-	  if (blinkLetterIndex == blinkLetterLength){
-		  putNewLetter();
-	  }
-
-	  if (blinkLetterIndex < blinkLetterLength){
-		  playLetterBlink();
-	  }
-
-	  if (blinkCodeIndex < inputCodeLength){
-		  playCodeBlink();
-	  }
+    while (1)
+      {
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-  }
+
+        nowTimestamp = getCurrentTime();
+        handleButtonClick(); //получение последовательности с кнопки
+        if (blinkCodeIndex < buttonCodeLength){ // если не все символы с кнопки были отображены на светодиодах
+        	blinkButtonCode(); // вывод следующего нажатия
+        }
+        if (!interruptsEnabled){ // прерывания запрещены
+        	transmitBlocking();
+        	receiveBlocking();
+        } else {
+        	receiveNonBlocking();
+        	transmitNonBlocking();
+        	if (newLetterReceived) finishReceiveIT(); // вызов обработки принятого символа
+        }
+        if (bufferLetterAvailable){ // если буфер символа с клавиатуры свободен
+        	putLetterToBlinkBuffer(); // если есть новый символ с клавиатуры, добавляем его в буфер
+        } else {
+        	blinkBufferedLetter(); // выводим символ из буфера на светодиод
+        }
+    }
   /* USER CODE END 3 */
 }
 
@@ -387,19 +396,17 @@ void SystemClock_Config(void)
 }
 
 /* USER CODE BEGIN 4 */
-
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart6) {
-        newLetter = true;
+        newLetterReceived = true;
     }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart6) {
-        handleTransmit();
+        resetTransmit();
     }
 }
-
 /* USER CODE END 4 */
 
 /**
@@ -434,4 +441,3 @@ void assert_failed(uint8_t *file, uint32_t line)
 }
 #endif /* USE_FULL_ASSERT */
 
-/************************ (C) COPYRIGHT STMicroelectronics *****END OF FILE****/

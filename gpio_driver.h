@@ -1,19 +1,12 @@
 /*
- * driver.h
+ * gpio_driver.h
  *
- *  Created on: 2 окт. 2021 г.
- *      Author: 1
+ *  Created on: Nov 29, 2021
+ *      Author: boris
  */
 
 #ifndef INC_GPIO_DRIVER_H_
 #define INC_GPIO_DRIVER_H_
-
-/*
- * driver.c
- *
- *  Created on: 28 сент. 2021 г.
- *      Author: 1
- */
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -21,20 +14,14 @@
 
 bool getButtonState();
 
-void resetButton();
+uint32_t getCurrentTime();
 
-void resetAllDiodes();
+uint32_t getTimeDifference(uint32_t start);
 
-uint32_t getTimeDifference(uint32_t time);
+GPIO_PinState getDiodeState(int diode);
 
-void delay(uint32_t ms);
+void turnDiodeOn(int color);
 
-uint16_t getDiode(uint8_t diode);
-
-void turnOnDiode(uint8_t diode);
-
-void turnOffDiode(uint8_t diode);
-
-GPIO_PinState getDiodeState(uint8_t diode);
+void turnDiodeOff(int color);
 
 #endif /* INC_GPIO_DRIVER_H_ */

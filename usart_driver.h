@@ -1,8 +1,8 @@
 /*
- * usart_driver.h
+ * usart_druver.h
  *
- *  Created on: Nov 12, 2021
- *      Author: 1
+ *  Created on: Nov 29, 2021
+ *      Author: boris
  */
 
 #ifndef INC_USART_DRIVER_H_
@@ -11,18 +11,16 @@
 #include "stm32f4xx_hal.h"
 #include <stdbool.h>
 
-uint8_t receiveBlocking(UART_HandleTypeDef *huart);
+uint8_t receive(struct __UART_HandleTypeDef *huart);
 
-uint8_t transmitBlocking(UART_HandleTypeDef *huart, uint8_t *letters);
+char transmit(struct __UART_HandleTypeDef *huart, uint8_t *letter);
 
-void receiveIT(UART_HandleTypeDef *huart, uint8_t *letters);
+void receiveIT(struct __UART_HandleTypeDef *huart, uint8_t *letter);
 
-void transmitIT(UART_HandleTypeDef *huart, uint8_t *letters);
+void transmitIT(struct __UART_HandleTypeDef *huart, uint8_t *letter);
 
 void enableInterrupt();
 
 void disableInterrupt();
-
-void toggleInterrupt(bool enabledInterrupt);
 
 #endif /* INC_USART_DRIVER_H_ */
