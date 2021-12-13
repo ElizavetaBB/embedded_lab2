@@ -47,7 +47,6 @@
 /* USER CODE BEGIN PV */
 bool previousButtonState = false;
 uint32_t pressTimestamp;
-uint32_t nowTimestamp;
 const uint32_t longPressTime = 500;
 int buttonCode = 0; // последовательность, набранная кнопкой
 char buttonCodeLength = 0; // длина последовательности
@@ -58,19 +57,21 @@ uint32_t blinkCodeTimestamp;
 const uint32_t shortBlinkDelay = 500;
 const uint32_t longBlinkDelay = 1000;
 
-uint8_t transmitLetter; // символ для передачи
+uint8_t transmitLetter = 0; // символ для передачи
 bool transmitRequest = false; // запрос на передачу
 
 bool interruptsEnabled = false; // флаг разрешения прерывания
 
 uint8_t buffer[8]; // буфер символов, введенных с клавиатуры
 char putIndex = 0; // индекс добавления символа в буфер
-char getIndex = 0; // индекс взятия символа
 bool isBufferFull = false;
+bool isBufferEmpty = true;
+char bufferCounter = 0;
 
 bool receiveStarted = false;
 uint8_t receivedLetter = 0;
 bool newLetterReceived = false;
+bool receiveITInitialized = false;
 
 char blinkLetterIndex; // текущий индекс на моргание символа с клавиатуры
 int blinkLetter; // символ на моргание
@@ -89,46 +90,49 @@ void SystemClock_Config(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 
-void resetButtonCode(){
-	buttonCode = 0;
-	buttonCodeLength = 0;
-	blinkCodeIndex = 0;
-}
-
 void handleButtonClick() {
-    bool buttonState = getButtonState();
-    if (buttonState) { // если нажата
-        if (!previousButtonState) { // если до этого не была нажата
-            pressTimestamp = nowTimestamp; // фиксируем время начала нажатия
-        }
-    } else { // не нажата
-    	if (previousButtonState){ // если до этого была нажата
-    		if (buttonCodeLength == 4){ // максимальная длина кода морзе равна 4
-    			resetButtonCode(); // если она превышена, обнуляем последовательность, т.к. она ошибочна
-    		}
-    		uint32_t pressDuration = getTimeDifference(pressTimestamp); // длительность нажатия
-    		if (pressDuration >= longPressTime){
-    			buttonCode = buttonCode * 10 + 2;
-    			buttonCodeLength++; // длина последовательности
-    		} else {
-    			buttonCode = buttonCode * 10 + 1;
-    			buttonCodeLength++;
-    		}
-    		pressTimestamp = nowTimestamp;
-    	} else {
-    		uint32_t noPressDuration = getTimeDifference(pressTimestamp); // время без нажатия
-    		if (noPressDuration >= endTimeDuration && buttonCodeLength > 0){
-    			// длина последовательности для вывода обязана быть ненулевой
-    			char letter = codeToLetter(buttonCode);
-    			if (letter){ // если последовательность является символом
-    				transmitLetter = letter;
+	bool buttonState = getButtonState();
+	    if (buttonState) { // если нажата
+	        if (!previousButtonState) { // если до этого не была нажата
+	            pressTimestamp = getCurrentTime(); // фиксируем время начала нажатия
+	        }
+	    } else { // не нажата
+	    	if (previousButtonState){ // если до этого была нажата
+	    		if (buttonCodeLength >= 4){ // максимальная длина кода морзе равна 4
+	    			transmitLetter = '?';
+	    			transmitRequest = true;
+	    			buttonCode = 0;
+	    			buttonCodeLength = 0;
+	    			blinkCodeIndex = 0;
+	    		} else {
+	    			uint32_t pressDuration = getTimeDifference(pressTimestamp); // длительность нажатия
+	    			if (pressDuration >= longPressTime){
+	    				buttonCode = buttonCode * 10 + 2;
+	    				buttonCodeLength++; // длина последовательности
+	    			} else if (pressDuration > 0){
+	    				buttonCode = buttonCode * 10 + 1;
+	    				buttonCodeLength++;
+	    			}
+	    		}
+	    		pressTimestamp = getCurrentTime();
+	    	} else {
+	    		uint32_t noPressDuration = getTimeDifference(pressTimestamp); // время без нажатия
+	    		if (noPressDuration >= endTimeDuration && buttonCodeLength > 0){
+	    			// длина последовательности для вывода обязана быть ненулевой
+	    			char letter = codeToLetter(buttonCode);
+	    			if (letter){ // если последовательность является символом
+	    				transmitLetter = letter;
+	    			} else {
+	    				transmitLetter = '?';
+	    			}
     				transmitRequest = true;
-    				resetButtonCode();
-    			}
-    		}
-    	}
-    }
-    previousButtonState = buttonState;
+	    			buttonCode = 0;
+	    			buttonCodeLength = 0;
+	    			blinkCodeIndex = 0;
+	    		}
+	    	}
+	    }
+	    previousButtonState = buttonState;
 }
 
 // вывод последовательности с кнопки
@@ -148,22 +152,15 @@ void blinkButtonCode(){
 		} else {
 			turnDiodeOn(diodeColor);
 		}
-		blinkCodeTimestamp = nowTimestamp;
+		blinkCodeTimestamp = getCurrentTime();
 	}
-}
-
-// очищаем запрос на передачу
-void resetTransmit(){
-	transmitRequest = false;
-	transmitLetter = 0;
 }
 
 // осуществляется блокирующая передача по запросу
 void transmitBlocking(){
-	if (transmitRequest){
-		if (transmit(&huart6, &transmitLetter)){
-			resetTransmit();
-		}
+	if (transmit(&huart6, &transmitLetter)){
+		transmitRequest = false;
+		transmitLetter = 0;
 	}
 }
 
@@ -172,20 +169,19 @@ void bufferPut(uint8_t letter){
 	if (!isBufferFull){
 		buffer[putIndex] = letter;
 		putIndex = (putIndex + 1) % 8;
-		if (putIndex == getIndex) isBufferFull = true;
+		bufferCounter++;
+		if (bufferCounter == 8) isBufferFull = true;
+		isBufferEmpty = false;
 	}
-}
-
-bool isBufferEmpty(){
-	return (putIndex == getIndex) && !isBufferFull;
 }
 
 // получение символа из буфера только в том случае, если он не пустой
 uint8_t bufferGet(){
-	if (!isBufferEmpty()){
-		uint8_t letter = buffer[getIndex];
-		getIndex = (getIndex + 1) % 8;
+	if (!isBufferEmpty){
+		uint8_t letter = buffer[(8 - bufferCounter + putIndex) % 8];
+		bufferCounter--;
 		isBufferFull = false;
+		if (bufferCounter == 0) isBufferEmpty = true;
 		return letter;
 	}
 	return 0;
@@ -197,8 +193,13 @@ void serviceNewLetter(uint8_t letter){
 		bufferPut(letter);
 	} else if (letter == '+') { // переключение режима
 		interruptsEnabled = !interruptsEnabled;
-		if (interruptsEnabled) enableInterrupt();
-		else disableInterrupt();
+		receiveITInitialized = false;
+		if (interruptsEnabled) {
+			enableInterrupt();
+		}
+		else {
+			disableInterrupt();
+		}
 	}
 }
 
@@ -220,14 +221,6 @@ void receiveBlocking(){
 	}
 }
 
-// очищение буфера символа с клавиатуры для моргания
-void resetLetterBuffer(){
-	blinkLetter = 0;
-	blinkLetterLength = 0;
-	blinkLetterIndex = 0;
-	bufferLetterAvailable = true; // разрешение моргания следующего символа
-}
-
 // вывод на зеленый светодиод символа с клавиатуры
 void blinkBufferedLetter(){
 	int letter = blinkLetter;
@@ -243,17 +236,22 @@ void blinkBufferedLetter(){
 		if (getDiodeState(diodeColor)){
 			turnDiodeOff(diodeColor);
 			blinkLetterIndex++;
-			if (blinkLetterIndex == blinkLetterLength) resetLetterBuffer();
+			if (blinkLetterIndex == blinkLetterLength) {
+				blinkLetter = 0;
+				blinkLetterLength = 0;
+				blinkLetterIndex = 0;
+				bufferLetterAvailable = true; // разрешение моргания следующего символа
+			}
 		} else {
 			turnDiodeOn(diodeColor);
 		}
-		blinkLetterTimestamp = nowTimestamp;
+		blinkLetterTimestamp = getCurrentTime();
 	}
 }
 
 // добавление символа с клавиатуры в буфер моргания
 void putLetterToBlinkBuffer(){
-	if (!isBufferEmpty()){
+	if (!isBufferEmpty){
 		uint8_t letter = bufferGet();
 		blinkLetter = letterToCode(letter);
 		int buffer = blinkLetter;
@@ -270,16 +268,14 @@ void putLetterToBlinkBuffer(){
 void receiveNonBlocking(){
 	if (!receiveStarted && !receivedLetter){
 		receiveIT(&huart6, &receivedLetter);
-		receiveStarted = false;
+		receiveStarted = true;
 	}
 }
 
 // неблокирующая передача
 void transmitNonBlocking(){
-	if (transmitRequest){
-		transmitIT(&huart6, &transmitLetter);
-		transmitRequest = false;
-	}
+	transmitIT(&huart6, &transmitLetter);
+	transmitRequest = false;
 }
 
 /* USER CODE END 0 */
@@ -324,17 +320,16 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-        nowTimestamp = getCurrentTime();
         handleButtonClick(); //получение последовательности с кнопки
         if (blinkCodeIndex < buttonCodeLength){ // если не все символы с кнопки были отображены на светодиодах
         	blinkButtonCode(); // вывод следующего нажатия
         }
         if (!interruptsEnabled){ // прерывания запрещены
-        	transmitBlocking();
+        	if (transmitRequest) transmitBlocking();
         	receiveBlocking();
         } else {
         	receiveNonBlocking();
-        	transmitNonBlocking();
+        	if (transmitRequest) transmitNonBlocking();
         	if (newLetterReceived) finishReceiveIT(); // вызов обработки принятого символа
         }
         if (bufferLetterAvailable){ // если буфер символа с клавиатуры свободен
@@ -398,13 +393,14 @@ void SystemClock_Config(void)
 /* USER CODE BEGIN 4 */
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart6) {
-        newLetterReceived = true;
+    	newLetterReceived = true;
     }
 }
 
 void HAL_UART_TxCpltCallback(UART_HandleTypeDef *huart) {
     if (huart == &huart6) {
-        resetTransmit();
+    	transmitRequest = false;
+    	transmitLetter = 0;
     }
 }
 /* USER CODE END 4 */

@@ -35,16 +35,13 @@ uint16_t getPinByColor(int color) {
 }
 
 GPIO_PinState getDiodeState(int color) {
-    uint16_t pin = getPinByColor(color);
-    return HAL_GPIO_ReadPin(GPIOD, pin);
+    return HAL_GPIO_ReadPin(GPIOD, getPinByColor(color));
 }
 
 void turnDiodeOn(int color) {
-    uint16_t pin = getPinByColor(color);
-    HAL_GPIO_WritePin(GPIOD, pin, GPIO_PIN_SET);
+    HAL_GPIO_WritePin(GPIOD, getPinByColor(color), GPIO_PIN_SET);
 }
 
 void turnDiodeOff(int color) {
-    uint16_t pin = getPinByColor(color);
-    HAL_GPIO_WritePin(GPIOD, pin, GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(GPIOD, getPinByColor(color), GPIO_PIN_RESET);
 }

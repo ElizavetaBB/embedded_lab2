@@ -19,6 +19,15 @@ int codes[26] ={12, 2111, 2121, 211, 1, 1121,
 				22, 21, 222, 1221, 2212, 121,
 				111, 2, 112, 1112, 122, 2112, 2122, 2211};
 
+int letterToCode(char letter) {
+	if (letter < 97 || letter > 122) return 0;
+	for (int i = 0; i < 26; i++){
+		if (letters[i] == letter) {
+			return codes[i];
+		}
+	}
+}
+
 char codeToLetter(int code) {
     for (int i = 0; i < 26; i++) {
         if (codes[i] == code) {
@@ -26,9 +35,4 @@ char codeToLetter(int code) {
         }
     }
     return 0;
-}
-
-int letterToCode(char letter) {
-	if (letter < 97 || letter > 122) return 0;
-	return codes[letter - 97];
 }
